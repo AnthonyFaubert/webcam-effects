@@ -65,11 +65,12 @@ def kernelSize(val):
         return val
 
 for widgetParams in (
-        ('blurKernel',        0, 100,   0, kernelSize),
+        ('classifierThreshold', 0.0, 1.0, 0.8, float, 0.01),
         ('erodeIterations', -20,  20,   0),
         ('erodeKernel',       3,  25,   5, kernelSize),
-#        ('kmeansEpsilon',     0,   1, 0.3, float, 0.05),
-        ('blurSigma',         1, 100,   3)
+        ('blurKernel',        0, 100,  31, kernelSize),
+        ('blurSigma',         1, 60,   5),
+        ('maskThreshold',   0.0, 0.5, 0.0, float, 0.05),
 ):
     Slider(*widgetParams)
 
@@ -77,21 +78,26 @@ for widgetParams in (
 
 BLACK = np.zeros((args.height, args.width, 3), dtype=np.uint8) # 2Dx3 uint8
 BLACK_MONO = np.zeros((args.height, args.width), dtype=np.uint8) # 2Dx1 uint8
-background = BLACK.copy()
-background[:,:,1] = 255
+#background = BLACK.copy()
+#background[:,:,1] = 255
+background = cv2.resize(cv2.imread('/home/tony/Downloads/DarkForest.jpg'), (args.width, args.height))
 
-def applyMask(mask, fg, bg):
+
+def applyMask(mask, fg, bg, threshold):
     assert(mask.shape == (args.height, args.width))
     assert(fg.shape == (args.height, args.width, 3))
     assert(bg.shape == (args.height, args.width, 3))
-    #mask = (mask - mask.min()) / mask.ptp() # Optional. It never goes outside of 0-1, and it's usually very close to 0-1.
+    if mask.min() > 0.02 or 0.0 > mask.min() or mask.ptp() > 1.001:
+        print('Bad mask range:', mask.min(), mask.min() + mask.ptp())
+        mask = (mask - mask.min()) / mask.ptp() # Optional. It never goes outside of 0-1, and it's usually very close to 0-1.
     maskBy3 = np.stack((mask,) * 3, axis=-1) # make a 2Dx1 into a 2Dx3
-    #mask = cv2.threshold(mask, 0.75, 1, cv2.THRESH_BINARY).astype(np.uint8) # 1 = maxvalue
-    return np.where(maskBy3 > 0.1, fg, bg)
-    frame = np.multiply(fg, maskBy3).astype(np.uint8)
-    frame += np.multiply(bg, 1 - maskBy3).astype(np.uint8)
-    return frame
-    
+    #assert(maskBy3.shape == (args.height, args.width, 3))
+    if threshold == 0.0:
+        #return (maskBy3 * 255).astype(np.uint8)
+        return (np.multiply(fg, maskBy3) + np.multiply(bg, 1 - maskBy3)).astype(np.uint8)
+    else:
+        return np.where(maskBy3 > threshold, fg, bg)
+
 erosionKernel = lambda size: np.ones((size, size), np.uint8)
 def loop():
     try:
@@ -101,25 +107,14 @@ def loop():
             master.after(500 / args.framerate, loop)
             return
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) # 2Dx3 uint8
-    
+
         # Run classifier
         frame.flags.writeable = False # pass by reference for better performance
         maskClassifier = classifier.process(frame).segmentation_mask # 2Dx1 float32
         frame.flags.writeable = True
 
-        if int(cv2.__version__[0]) > 3:
-            contours, _ = cv2.findContours((maskClassifier * 255).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        else:
-            _, contours, _ = cv2.findContours((maskClassifier * 255).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        maxContourAreaIndex = -1
-        maxContourArea = -1
-        for i in range(len(contours)):
-            area = cv2.contourArea(contours[i])
-            if area > maxContourArea:
-                maxContourArea = area
-                maxContourAreaIndex = i
-        maskBlob = np.multiply(maskClassifier, cv2.drawContours(BLACK_MONO.copy(), contours, maxContourAreaIndex, (1.0), -1))
-            
+        _, maskBlob = cv2.threshold(maskClassifier, sliderVals['classifierThreshold'], 1, cv2.THRESH_BINARY) # 1 = maxvalue
+
         if sliderVals['erodeIterations'] > 0:
             mask = cv2.erode(maskBlob, erosionKernel(sliderVals['erodeKernel']), iterations=sliderVals['erodeIterations'])
         elif sliderVals['erodeIterations'] < 0:
@@ -128,8 +123,8 @@ def loop():
             mask = maskBlob
         if sliderVals['blurKernel'] != 0:
             mask = cv2.GaussianBlur(mask, (sliderVals['blurKernel'], sliderVals['blurKernel']), sliderVals['blurSigma'], borderType=cv2.BORDER_DEFAULT)
-    
-    
+
+
 
         #maskBy3 = np.stack((mask,) * 3, axis=-1) # make a 2Dx1 into a 2Dx3
         #print(mask.shape, maskBy3.shape)
@@ -140,7 +135,7 @@ def loop():
         #frame[:,:,1] = (mask * 255).astype(np.uint8)
         #frame[:,:,1] = (maskClassifier * 255).astype(np.uint8)
         #frame[:,:,2] = (maskKMeans * 255).astype(np.uint8)
-        camFake.schedule_frame(applyMask(maskClassifier, frame, background))
+        camFake.schedule_frame(applyMask(mask, frame, background, sliderVals['maskThreshold']))
         master.after(1, loop)
     except KeyboardInterrupt as err:
         print('Quitting.')
@@ -150,8 +145,8 @@ def loop():
         master.destroy()
         camReal.release()
         traceback.print_exc()
-        
-        
+
+
 master.after(1, loop)
 print('Main loop')
 master.mainloop()
