@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
-import cv2, pyfakewebcam, time, argparse, mediapipe, traceback, code
+import cv2, time, argparse, mediapipe, traceback, code
 import numpy as np
 import tkinter as tk
+
+USE_NEW_CAM_LIB = False
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-r', '--webcam-path-real', dest='cam_path_real', default="/dev/video0", help="Set real webcam path")
@@ -10,7 +12,9 @@ parser.add_argument('-f', '--webcam-path-fake', dest='cam_path_fake', default="/
 
 parser.add_argument('-W', '--width', default=640, type=int, help="Resolution width.")
 parser.add_argument('-H', '--height', default=480, type=int, help="Resolution height.")
-parser.add_argument('-F', '--framerate', default=24, type=int, help="Framerate.")
+parser.add_argument('-F', '--framerate', default=30, type=int, help="Framerate.")
+
+parser.add_argument('-a', '--average-frames', default=5, type=int, help="Average the mask across this many frames.")
 
 #parser.add_argument('--background-blur', dest='bg_blur_kernel', default=21, type=int, metavar='k', help="The gaussian bluring kernel size in pixels. MUST BE AN ODD NUMBER. Zero disables blurring.")
 #parser.add_argument("--background-blur-sigma-frac", dest='bg_blur_sigma', default=3, type=int, metavar='frac', help="The fraction of the kernel size to use for the sigma value (ie. sigma = k / frac).")
@@ -25,19 +29,27 @@ classifier = mediapipe.solutions.selfie_segmentation.SelfieSegmentation(model_se
 def realSet(cam, prop, value):
     cam.set(prop, value)
     if value != int(cam.get(prop)):
-        print(f'FATAL: prop {prop} failed to set to {value}!')
+        print(f'FATAL: prop {prop} failed to set to {value}! Got {cam.get(prop)}!')
         quit()
 camReal = cv2.VideoCapture(args.cam_path_real, cv2.CAP_V4L2)
-realSet(camReal, cv2.CAP_PROP_FRAME_WIDTH, args.width)
-realSet(camReal, cv2.CAP_PROP_FRAME_HEIGHT, args.height)
 realSet(camReal, cv2.CAP_PROP_FPS, args.framerate)
+realSet(camReal, cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+realSet(camReal, cv2.CAP_PROP_FRAME_WIDTH, args.width)
 
-try:
-    camFake = pyfakewebcam.FakeWebcam(args.cam_path_fake, args.width, args.height)
-except FileNotFoundError as err:
-    print(err)
-    print("You probably just didn't run `sudo modprobe v4l2loopback` yet.") # `sudo modprobe v4l2loopback devices=2` for multiple devices
-
+if USE_NEW_CAM_LIB:
+    import pyvirtualcam
+    camFake = pyvirtualcam.Camera(width=1280, height=720, fps=30)
+    print(camFake.device)
+else:
+    import pyfakewebcam
+    try:
+        camFake = pyfakewebcam.FakeWebcam(args.cam_path_fake, args.width, args.height)
+    except FileNotFoundError as err:
+        print(err)
+        print("You probably just didn't run `sudo modprobe v4l2loopback` yet.") # `sudo modprobe v4l2loopback devices=2` for multiple devices
+# `sudo modprobe v4l2loopback devices=1 && v4l2-ctl -d /dev/video2 -c sustain_framerate=1`
+# exclusive_caps=1 is incompatible with Teams
+# https://github.com/umlaeute/v4l2loopback
 
 master = tk.Tk()
 sliderVals = {}
@@ -74,13 +86,30 @@ for widgetParams in (
 ):
     Slider(*widgetParams)
 
+master.title('WebcamEffects knobs')
+bgFileInput = tk.Text(master, height=1, width=60)
+bgFileInput.insert('1.0', '/home/tony/Downloads/DarkForest.jpg')
+bgFileInput.pack()
+background = None
+def setBGFile():
+    global bgFileInput, background
+    try:
+        fn = bgFileInput.get('1.0', 'end').strip()
+        print(fn)
+        img = cv2.imread(fn)
+        print(img.shape)
+        background = cv2.resize(img, (args.width, args.height))
+    except:
+        traceback.print_exc()
 
+setBGFile()
+bgFileButton = tk.Button(master, text='Set BGFile', command=setBGFile)
+bgFileButton.pack()
 
 BLACK = np.zeros((args.height, args.width, 3), dtype=np.uint8) # 2Dx3 uint8
 BLACK_MONO = np.zeros((args.height, args.width), dtype=np.uint8) # 2Dx1 uint8
 #background = BLACK.copy()
 #background[:,:,1] = 255
-background = cv2.resize(cv2.imread('/home/tony/Downloads/DarkForest.jpg'), (args.width, args.height))
 
 
 def applyMask(mask, fg, bg, threshold):
@@ -98,8 +127,18 @@ def applyMask(mask, fg, bg, threshold):
     else:
         return np.where(maskBy3 > threshold, fg, bg)
 
+if USE_NEW_CAM_LIB:
+    img = cv2.resize(background, (1280, 720))
+    while True:
+        camFake.send(img)
+        time.sleep(1 / 100)
+    quit()
+
 erosionKernel = lambda size: np.ones((size, size), np.uint8)
+maskAveraging = [BLACK_MONO] * args.average_frames
+maskAveragingIndex = 0
 def loop():
+    global maskAveraging, maskAveragingIndex
     try:
         # Read frame from real camera
         grabbed, frame = camReal.read()
@@ -135,7 +174,19 @@ def loop():
         #frame[:,:,1] = (mask * 255).astype(np.uint8)
         #frame[:,:,1] = (maskClassifier * 255).astype(np.uint8)
         #frame[:,:,2] = (maskKMeans * 255).astype(np.uint8)
-        camFake.schedule_frame(applyMask(mask, frame, background, sliderVals['maskThreshold']))
+
+        if args.average_frames > 0:
+            maskAveraging[maskAveragingIndex] = mask
+            maskAveragingIndex = (maskAveragingIndex + 1) % args.average_frames
+            for i in range(args.average_frames - 1):
+                mask += maskAveraging[(maskAveragingIndex + i) % args.average_frames]
+            mask /= args.average_frames
+
+        out = applyMask(mask, frame, background, sliderVals['maskThreshold'])
+        if USE_NEW_CAM_LIB:
+            camFake.send(cv2.resize(out, (1280, 720)))
+        else:
+            camFake.schedule_frame(out)
         master.after(1, loop)
     except KeyboardInterrupt as err:
         print('Quitting.')
