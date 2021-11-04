@@ -1,6 +1,7 @@
 Webcam background replacer. Other effects / features TBD, but background blurring / frosted glass effect planned.
 
 Prereqs:
+
     sudo apt install v4l2loopback-utils
     
     numpy>=1.19.3
@@ -10,6 +11,7 @@ Prereqs:
     # optional: sudo pip3 install pyvirtualcam
 
 How to run:
+
     # Assuming `ls /dev/video*` returns video0 and video1
     sudo modprobe v4l2loopback devices=1
     v4l2-ctl -d /dev/video2 -c sustain_framerate=1
