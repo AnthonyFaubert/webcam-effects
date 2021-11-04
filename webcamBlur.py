@@ -6,7 +6,9 @@ import tkinter as tk
 
 USE_NEW_CAM_LIB = False
 
-parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(description='''Webcam background blurrer/replacer.
+Run `sudo modprobe v4l2loopback devices=1 && v4l2-ctl -d /dev/video2 -c sustain_framerate=1` to setup the loopback device before you run this.
+In Teams, DO NOT CLICK THE WEBCAM VIEW. That attempts to switch to front-facing camera, which seems to try to read the real webcam and crash because it's already in use.''')
 parser.add_argument('-r', '--webcam-path-real', dest='cam_path_real', default="/dev/video0", help="Set real webcam path")
 parser.add_argument('-f', '--webcam-path-fake', dest='cam_path_fake', default="/dev/video2", help="V4l2loopback device path")
 
@@ -14,6 +16,7 @@ parser.add_argument('-W', '--width', default=640, type=int, help="Resolution wid
 parser.add_argument('-H', '--height', default=480, type=int, help="Resolution height.")
 parser.add_argument('-F', '--framerate', default=30, type=int, help="Framerate.")
 
+parser.add_argument('-b', '--background-file', default='/home/tony/Downloads/spaceship_bg.jpg', help="Starting background file path. Can be changed dynamically in the GUI.")
 parser.add_argument('-a', '--average-frames', default=5, type=int, help="Average the mask across this many frames.")
 
 #parser.add_argument('--background-blur', dest='bg_blur_kernel', default=21, type=int, metavar='k', help="The gaussian bluring kernel size in pixels. MUST BE AN ODD NUMBER. Zero disables blurring.")
@@ -88,7 +91,7 @@ for widgetParams in (
 
 master.title('WebcamEffects knobs')
 bgFileInput = tk.Text(master, height=1, width=60)
-bgFileInput.insert('1.0', '/home/tony/Downloads/DarkForest.jpg')
+bgFileInput.insert('1.0', args.background_file)
 bgFileInput.pack()
 background = None
 def setBGFile():
@@ -98,6 +101,7 @@ def setBGFile():
         print(fn)
         img = cv2.imread(fn)
         print(img.shape)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         background = cv2.resize(img, (args.width, args.height))
     except:
         traceback.print_exc()
